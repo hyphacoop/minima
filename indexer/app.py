@@ -63,6 +63,20 @@ async def embedding(request: Query):
         return {"error": str(e)}    
 
 
+@router.post(
+    "/reindex", 
+    response_description='Manually trigger reindexing of all files',
+)
+async def manual_reindex():
+    logger.info("Manual reindexing triggered via API")
+    try:
+        await trigger_re_indexer()
+        return {"status": "success", "message": "Reindexing completed successfully"}
+    except Exception as e:
+        logger.error(f"Error in manual reindexing: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tasks = [
