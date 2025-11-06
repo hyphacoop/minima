@@ -184,30 +184,41 @@ class Indexer:
         try:
             logger.info(f"Searching for: {query}")
             found = self.document_store.search(query, search_type="similarity")
-            
+
             if not found:
                 logger.info("No results found")
-                return {"links": set(), "output": ""}
+                return {"links": [], "output": "", "chunks": []}
 
+            # Collect unique links for backward compatibility
             links = set()
-            results = []
-            
+
+            # Build structured chunks with individual sources
+            chunks = []
+
             for item in found:
                 path = item.metadata["file_path"].replace(
                     self.config.CONTAINER_PATH,
                     self.config.LOCAL_FILES_PATH
                 )
-                links.add(f"file://{path}")
-                results.append(item.page_content)
+                file_url = f"file://{path}"
+                links.add(file_url)
 
+                # Store each chunk with its specific source
+                chunks.append({
+                    "content": item.page_content,
+                    "source": file_url
+                })
+
+            # For backward compatibility, keep the old format
             output = {
-                "links": links,
-                "output": ". ".join(results)
+                "links": list(links),  # Convert set to list for JSON serialization
+                "output": ". ".join([chunk["content"] for chunk in chunks]),
+                "chunks": chunks  # NEW: structured chunk-level data
             }
-            
+
             logger.info(f"Found {len(found)} results")
             return output
-            
+
         except Exception as e:
             logger.error(f"Search failed: {str(e)}")
             return {"error": "Unable to find anything for the given query"}
