@@ -68,6 +68,8 @@ class LLMConfig:
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = os.environ.get("OLLAMA_MODEL")
     rerank_model: str = os.environ.get("RERANKER_MODEL")
+    retrieval_k: int = int(os.environ.get("RETRIEVAL_K", "20"))
+    rerank_top_n: int = int(os.environ.get("RERANK_TOP_N", "5"))
     temperature: float = 0.5
     device: torch.device = torch.device(
         "mps" if torch.backends.mps.is_available() else
@@ -124,13 +126,18 @@ class LLMChain:
     def _setup_chain(self):
         """Set up the retrieval and QA chain"""
         # Initialize retriever with reranking
-        base_retriever = self.document_store.as_retriever()
+        base_retriever = self.document_store.as_retriever(
+            search_kwargs={"k": self.config.retrieval_k}
+        )
         reranker = HuggingFaceCrossEncoder(
             model_name=self.config.rerank_model,
             model_kwargs={'device': self.config.device},
         )
         compression_retriever = ContextualCompressionRetriever(
-            base_compressor=CrossEncoderReranker(model=reranker, top_n=3),
+            base_compressor=CrossEncoderReranker(
+                model=reranker,
+                top_n=self.config.rerank_top_n
+            ),
             base_retriever=base_retriever
         )
 

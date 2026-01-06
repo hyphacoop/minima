@@ -72,6 +72,10 @@ Minima currently supports three modes:
 
 **RERANKER_MODEL**: Specify the reranker model. Currently, we have tested with BAAI rerankers. You can explore all available rerankers using this [link](https://huggingface.co/collections/BAAI/).
 
+**RETRIEVAL_K**: Number of candidate documents to pull from the vector store before reranking.
+
+**RERANK_TOP_N**: Number of documents to keep after reranking.
+
 **USER_ID**: Just use your email here, this is needed to authenticate custom GPT to search in your data.
 
 **PASSWORD**: Put any password here, this is used to create a firebase account for the email specified above.
@@ -87,6 +91,8 @@ EMBEDDING_MODEL_ID=sentence-transformers/all-mpnet-base-v2
 EMBEDDING_SIZE=768
 OLLAMA_MODEL=qwen2:0.5b # must be LLM model id from Ollama models page
 RERANKER_MODEL=BAAI/bge-reranker-base # please, choose any BAAI reranker model
+RETRIEVAL_K=20
+RERANK_TOP_N=5
 ```
 
 To use a chat ui, please navigate to **http://localhost:3000**
