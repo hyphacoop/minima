@@ -11,7 +11,7 @@ from qdrant_client import QdrantClient
 from langchain_qdrant import QdrantVectorStore
 from langchain_huggingface import HuggingFaceEmbeddings
 from qdrant_client.http.models import Distance, VectorParams, Filter, FieldCondition, MatchValue
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from langchain_community.document_loaders import (
     TextLoader,
@@ -55,6 +55,7 @@ class Config:
     QDRANT_BOOTSTRAP = "qdrant"
     EMBEDDING_MODEL_ID = os.environ.get("EMBEDDING_MODEL_ID")
     EMBEDDING_SIZE = os.environ.get("EMBEDDING_SIZE")
+    SEARCH_TOP_K = int(os.environ.get("RERANK_TOP_N", "5"))
     
     CHUNK_SIZE = 500
     CHUNK_OVERLAP = 200
@@ -183,7 +184,7 @@ class Indexer:
     def find(self, query: str) -> Dict[str, any]:
         try:
             logger.info(f"Searching for: {query}")
-            found = self.document_store.search(query, search_type="similarity")
+            found = self.document_store.search(query, search_type="similarity", k=self.config.SEARCH_TOP_K)
 
             if not found:
                 logger.info("No results found")
