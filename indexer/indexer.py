@@ -93,11 +93,16 @@ class Indexer:
                     distance=Distance.COSINE
                 ),
             )
-        self.qdrant.create_payload_index(
-            collection_name=self.config.QDRANT_COLLECTION,
-            field_name="fpath",
-            field_schema="keyword"
-        )
+        # Try to create payload index, but don't fail if it already exists or times out
+        try:
+            self.qdrant.create_payload_index(
+                collection_name=self.config.QDRANT_COLLECTION,
+                field_name="fpath",
+                field_schema="keyword"
+            )
+            logger.info("Payload index created or already exists")
+        except Exception as e:
+            logger.warning(f"Could not create payload index (may already exist or timeout): {e}")
         return QdrantVectorStore(
             client=self.qdrant,
             collection_name=self.config.QDRANT_COLLECTION,
