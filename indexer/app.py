@@ -37,11 +37,10 @@ class Query(BaseModel):
     response_description='Query local data storage',
 )
 async def query(request: Query):
-    logger.info(f"Received query: {query}")
+    logger.info(f"Received query: {request.query}")
     try:
         result = indexer.find(request.query)
-        logger.info(f"Found {len(result)} results for query: {query}")
-        logger.info(f"Results: {result}")
+        logger.info(f"Found {len(result.get('chunks', []))} chunks for query: {request.query}")
         return {"result": result}
     except Exception as e:
         logger.error(f"Error in processing query: {e}")
