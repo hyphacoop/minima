@@ -37,5 +37,7 @@ services:
       - RERANKER_MODEL=${RERANKER_MODEL}
       - RERANK_TOP_N=${RERANK_TOP_N}
       - RETRIEVAL_K=${RETRIEVAL_K}
+      - CHUNK_SIZE=${CHUNK_SIZE:-650}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP:-300}
     depends_on:
       - qdrant

@@ -57,8 +57,8 @@ class Config:
     EMBEDDING_SIZE = os.environ.get("EMBEDDING_SIZE")
     SEARCH_TOP_K = int(os.environ.get("RERANK_TOP_N", "5"))
     
-    CHUNK_SIZE = 500
-    CHUNK_OVERLAP = 200
+    CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "650"))
+    CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "300"))
 
 class Indexer:
     def __init__(self):

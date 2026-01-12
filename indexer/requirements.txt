@@ -1,5 +1,6 @@
 langchain
 langchain-core
+langchain-text-splitters
 langfuse
 langchain_qdrant
 langchain_community
