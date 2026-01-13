@@ -12,6 +12,9 @@ from langchain_qdrant import QdrantVectorStore
 from langchain_huggingface import HuggingFaceEmbeddings
 from qdrant_client.http.models import Distance, VectorParams, Filter, FieldCondition, MatchValue
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import CrossEncoderReranker
+from langchain_community.cross_encoders.huggingface import HuggingFaceCrossEncoder
 
 from langchain_community.document_loaders import (
     TextLoader,
@@ -56,6 +59,8 @@ class Config:
     EMBEDDING_MODEL_ID = os.environ.get("EMBEDDING_MODEL_ID")
     EMBEDDING_SIZE = os.environ.get("EMBEDDING_SIZE")
     SEARCH_TOP_K = int(os.environ.get("RERANK_TOP_N", "5"))
+    RETRIEVAL_K = int(os.environ.get("RETRIEVAL_K", "30"))
+    RERANKER_MODEL = os.environ.get("RERANKER_MODEL")
     
     CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "650"))
     CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "300"))
@@ -189,7 +194,27 @@ class Indexer:
     def find(self, query: str) -> Dict[str, any]:
         try:
             logger.info(f"Searching for: {query}")
-            found = self.document_store.search(query, search_type="similarity", k=self.config.SEARCH_TOP_K)
+
+            # Stage 1: Get base retriever with higher k for more candidates
+            base_retriever = self.document_store.as_retriever(
+                search_kwargs={"k": self.config.RETRIEVAL_K}
+            )
+
+            # Stage 2: Apply cross-encoder reranking
+            reranker = HuggingFaceCrossEncoder(
+                model_name=self.config.RERANKER_MODEL,
+                model_kwargs={'device': self.config.DEVICE},
+            )
+            compression_retriever = ContextualCompressionRetriever(
+                base_compressor=CrossEncoderReranker(
+                    model=reranker,
+                    top_n=self.config.SEARCH_TOP_K
+                ),
+                base_retriever=base_retriever
+            )
+
+            # Get reranked results
+            found = compression_retriever.invoke(query)
 
             if not found:
                 logger.info("No results found")
@@ -222,7 +247,7 @@ class Indexer:
                 "chunks": chunks  # NEW: structured chunk-level data
             }
 
-            logger.info(f"Found {len(found)} results")
+            logger.info(f"Found {len(found)} results after reranking")
             return output
 
         except Exception as e:
