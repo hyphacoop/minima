@@ -12,8 +12,8 @@ from langchain_qdrant import QdrantVectorStore
 from langchain_huggingface import HuggingFaceEmbeddings
 from qdrant_client.http.models import Distance, VectorParams, Filter, FieldCondition, MatchValue
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import CrossEncoderReranker
+from langchain_classic.retrievers import ContextualCompressionRetriever
+from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
 from langchain_community.cross_encoders.huggingface import HuggingFaceCrossEncoder
 
 from langchain_community.document_loaders import (
