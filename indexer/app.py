@@ -15,7 +15,8 @@ from file_watcher import FileWatcher
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CONTAINER_PATH = os.environ.get("CONTAINER_PATH")
+# Path to crawl/watch: CONTAINER_PATH in Docker, LOCAL_FILES_PATH when running locally
+FILES_PATH = os.environ.get("CONTAINER_PATH") or os.environ.get("LOCAL_FILES_PATH")
 ENABLE_FILE_WATCHER = os.environ.get("ENABLE_FILE_WATCHER", "true").lower() == "true"
 
 indexer = Indexer()
@@ -99,6 +100,9 @@ async def watchdog_health_check(file_watcher: FileWatcher):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not FILES_PATH:
+        raise ValueError("Set CONTAINER_PATH or LOCAL_FILES_PATH in environment")
+
     # Run initial crawl first
     await crawl_loop(async_queue)
     logger.info("Initial crawl complete")
@@ -107,9 +111,9 @@ async def lifespan(app: FastAPI):
     file_watcher = None
     if ENABLE_FILE_WATCHER:
         try:
-            file_watcher = FileWatcher(async_queue, CONTAINER_PATH)
+            file_watcher = FileWatcher(async_queue, FILES_PATH)
             file_watcher.start()
-            logger.info(f"File watcher started monitoring: {CONTAINER_PATH}")
+            logger.info(f"File watcher started monitoring: {FILES_PATH}")
         except Exception as e:
             logger.error(f"Failed to start watcher: {e}. Using scheduled crawl only.")
     else:

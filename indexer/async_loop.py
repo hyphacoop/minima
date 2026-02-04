@@ -8,14 +8,15 @@ from concurrent.futures import ThreadPoolExecutor
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor()
 
-CONTAINER_PATH = os.environ.get("CONTAINER_PATH")
+# Path to crawl/watch: CONTAINER_PATH in Docker, LOCAL_FILES_PATH when running locally
+FILES_PATH = os.environ.get("CONTAINER_PATH") or os.environ.get("LOCAL_FILES_PATH")
 AVAILABLE_EXTENSIONS = [".pdf", ".xls", "xlsx", ".doc", ".docx", ".txt", ".md", ".csv", ".ppt", ".pptx"]
 
 
 async def crawl_loop(async_queue):
-    logger.info(f"Starting crawl loop with path: {CONTAINER_PATH}")
+    logger.info(f"Starting crawl loop with path: {FILES_PATH}")
     existing_file_paths: list[str] = []
-    for root, _, files in os.walk(CONTAINER_PATH):
+    for root, _, files in os.walk(FILES_PATH):
         logger.info(f"Processing folder: {root}")
         for file in files:
             if not any(file.endswith(ext) for ext in AVAILABLE_EXTENSIONS):
