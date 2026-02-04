@@ -56,6 +56,14 @@ class MinimaStore(metaclass=Singleton):
             return doc
 
     @staticmethod
+    def select_all_indexed_paths() -> list[str]:
+        """Return all file paths currently indexed in the database"""
+        with Session(engine) as session:
+            statement = select(MinimaDoc.fpath)
+            results = session.exec(statement)
+            return [fpath for fpath in results]
+
+    @staticmethod
     def find_removed_files(existing_file_paths: set[str]):
         removed_files: list[str] = []
         with Session(engine) as session:
