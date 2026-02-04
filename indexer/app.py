@@ -1,3 +1,4 @@
+import os
 import nltk
 import logging
 import asyncio
@@ -9,9 +10,13 @@ from fastapi import FastAPI, APIRouter
 from contextlib import asynccontextmanager
 from fastapi_utilities import repeat_every
 from async_loop import index_loop, crawl_loop
+from file_watcher import FileWatcher
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+CONTAINER_PATH = os.environ.get("CONTAINER_PATH")
+ENABLE_FILE_WATCHER = os.environ.get("ENABLE_FILE_WATCHER", "true").lower() == "true"
 
 indexer = Indexer()
 router = APIRouter()
@@ -62,19 +67,79 @@ async def embedding(request: Query):
         return {"error": str(e)}    
 
 
+async def watchdog_health_check(file_watcher: FileWatcher):
+    """Monitor file watcher health and restart if needed"""
+    retry_count = 0
+    max_retries = 5
+
+    while True:
+        await asyncio.sleep(30)  # Check every 30 seconds
+
+        if not file_watcher.is_alive():
+            logger.error(f"File watcher died! Attempting restart (attempt {retry_count + 1}/{max_retries})")
+
+            if retry_count < max_retries:
+                delay = 2 ** retry_count  # Exponential backoff
+                await asyncio.sleep(delay)
+
+                try:
+                    file_watcher.stop()
+                    file_watcher.start()
+                    retry_count = 0  # Reset on success
+                    logger.info("File watcher successfully restarted")
+                except Exception as e:
+                    logger.error(f"Failed to restart watcher: {e}")
+                    retry_count += 1
+            else:
+                logger.critical("File watcher failed to restart after max retries. Manual intervention required.")
+                break
+        else:
+            retry_count = 0  # Reset counter if watcher is healthy
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Run initial crawl first
+    await crawl_loop(async_queue)
+    logger.info("Initial crawl complete")
+
+    # Start file watcher for incremental updates
+    file_watcher = None
+    if ENABLE_FILE_WATCHER:
+        try:
+            file_watcher = FileWatcher(async_queue, CONTAINER_PATH)
+            file_watcher.start()
+            logger.info(f"File watcher started monitoring: {CONTAINER_PATH}")
+        except Exception as e:
+            logger.error(f"Failed to start watcher: {e}. Using scheduled crawl only.")
+    else:
+        logger.info("File watcher disabled via environment variable")
+
+    # Start existing loops + health check
     tasks = [
-        asyncio.create_task(crawl_loop(async_queue)),
         asyncio.create_task(index_loop(async_queue, indexer))
     ]
+
+    if file_watcher is not None:
+        tasks.append(asyncio.create_task(watchdog_health_check(file_watcher)))
+
+    # Start scheduled backup polling
     await schedule_reindexing()
+
     try:
         yield
     finally:
+        # Stop file watcher first
+        if file_watcher:
+            logger.info("Stopping file watcher...")
+            file_watcher.stop()
+
+        # Cancel async tasks
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+        logger.info("Application shutdown complete")
 
 
 def create_app() -> FastAPI:

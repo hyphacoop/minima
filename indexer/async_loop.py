@@ -26,7 +26,8 @@ async def crawl_loop(async_queue):
                 "path": path,
                 "file_id": str(uuid.uuid4()),
                 "last_updated_seconds": round(os.path.getmtime(path)),
-                "type": "file"
+                "type": "file",
+                "source": "scheduled_crawl"
             }
             existing_file_paths.append(path)
             async_queue.enqueue(message)
@@ -34,10 +35,11 @@ async def crawl_loop(async_queue):
     # Enqueue aggregate message and stop signal AFTER all files are discovered
     aggregate_message = {
         "existing_file_paths": existing_file_paths,
-        "type": "all_files"
+        "type": "all_files",
+        "source": "scheduled_crawl"
     }
     async_queue.enqueue(aggregate_message)
-    async_queue.enqueue({"type": "stop"})
+    async_queue.enqueue({"type": "stop", "source": "scheduled_crawl"})
 
 
 async def index_loop(async_queue, indexer: Indexer):
@@ -45,11 +47,15 @@ async def index_loop(async_queue, indexer: Indexer):
     logger.info("Starting index loop")
     while True:
         if async_queue.size() == 0:
-            logger.info("No files to index. Indexing stopped, all files indexed.")
+            logger.debug("No files to index. Queue empty, waiting for events...")
             await asyncio.sleep(1)
             continue
         message = await async_queue.dequeue()
-        logger.info(f"Processing message: {message}")
+        source = message.get("source", "unknown")
+        if message["type"] == "file":
+            logger.info(f"Processing message from {source}: {message.get('path', 'unknown')}")
+        else:
+            logger.info(f"Processing message from {source}: {message}")
         try:
             if message["type"] == "file":
                 await loop.run_in_executor(executor, indexer.index, message)
