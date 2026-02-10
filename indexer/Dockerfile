@@ -1,13 +1,12 @@
 # GPU-enabled minima indexer
 # Uses NVIDIA CUDA runtime for GPU inference
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.1-base-ubuntu22.04
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install Python 3.11 and dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
     python3.11 \
     python3.11-venv \
     python3.11-dev \
