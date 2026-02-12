@@ -1,0 +1,114 @@
+name: Release Minima Image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish/dispatch (e.g. v0.0.1). Leave empty for build-only manual image."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: hyphacoop
+  MULTITENANT_REPO: hyphacoop/roo-multitenant
+  DEFAULT_EMBEDDING_MODEL_ID: BAAI/bge-base-en-v1.5
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image tag + release/dispatch mode
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            image_tag="${GITHUB_REF_NAME}"
+            do_release="true"
+            do_dispatch="true"
+          else
+            input_tag='${{ inputs.tag }}'
+            if [ -z "$input_tag" ]; then
+              image_tag="manual-${GITHUB_SHA::7}"
+              do_release="false"
+              do_dispatch="false"
+            elif echo "$input_tag" | grep -Eq '^v[0-9]+(\.[0-9]+){2}([-.][0-9A-Za-z]+)*$'; then
+              image_tag="$input_tag"
+              do_release="true"
+              do_dispatch="true"
+            else
+              image_tag="$input_tag"
+              do_release="false"
+              do_dispatch="false"
+            fi
+          fi
+
+          echo "IMAGE_TAG=${image_tag}" >> "$GITHUB_ENV"
+          echo "DO_RELEASE=${do_release}" >> "$GITHUB_ENV"
+          echo "DO_DISPATCH=${do_dispatch}" >> "$GITHUB_ENV"
+          echo "Resolved IMAGE_TAG=${image_tag} DO_RELEASE=${do_release} DO_DISPATCH=${do_dispatch}"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push minima-indexer
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./indexer/Dockerfile
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            EMBEDDING_MODEL_ID=${{ vars.EMBEDDING_MODEL_ID || env.DEFAULT_EMBEDDING_MODEL_ID }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/minima-indexer:${{ env.IMAGE_TAG }}
+
+      - name: Create GitHub Release
+        if: env.DO_RELEASE == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.IMAGE_TAG }}
+          generate_release_notes: true
+
+      - name: Create GitHub App token for roo-multitenant dispatch
+        if: env.DO_DISPATCH == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ROOLLM_APP_ID }}
+          private-key: ${{ secrets.ROOLLM_APP_PRIVATE_KEY }}
+          owner: hyphacoop
+          repositories: roo-multitenant
+
+      - name: Dispatch dependency bump to roo-multitenant
+        if: env.DO_DISPATCH == 'true'
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/dispatch.json -w "%{http_code}" -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://api.github.com/repos/${MULTITENANT_REPO}/dispatches" \
+            -d "{\"event_type\":\"dependency_tag\",\"client_payload\":{\"component\":\"minima\",\"tag\":\"${IMAGE_TAG}\"}}")
+          cat /tmp/dispatch.json || true
+          test "$code" = "204"
