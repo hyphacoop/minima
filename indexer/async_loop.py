@@ -33,24 +33,19 @@ async def crawl_loop(async_queue):
             existing_file_paths.append(path)
             async_queue.enqueue(message)
             logger.info(f"File enqueue: {path}")
-    # Enqueue aggregate message and stop signal AFTER all files are discovered
+    # Enqueue aggregate message AFTER all files are discovered
     aggregate_message = {
         "existing_file_paths": existing_file_paths,
         "type": "all_files",
         "source": "scheduled_crawl"
     }
     async_queue.enqueue(aggregate_message)
-    async_queue.enqueue({"type": "stop", "source": "scheduled_crawl"})
 
 
 async def index_loop(async_queue, indexer: Indexer):
     loop = asyncio.get_running_loop()
     logger.info("Starting index loop")
     while True:
-        if async_queue.size() == 0:
-            logger.debug("No files to index. Queue empty, waiting for events...")
-            await asyncio.sleep(1)
-            continue
         message = await async_queue.dequeue()
         source = message.get("source", "unknown")
         if message["type"] == "file":
@@ -62,15 +57,8 @@ async def index_loop(async_queue, indexer: Indexer):
                 await loop.run_in_executor(executor, indexer.index, message)
             elif message["type"] == "all_files":
                 await loop.run_in_executor(executor, indexer.purge, message)
-            elif message["type"] == "stop":
-                # Only stop if queue is empty, otherwise continue processing files
-                if async_queue.size() == 0:
-                    logger.info("Stop signal received and queue is empty. Stopping index loop.")
-                    break
-                else:
-                    logger.info(f"Stop signal received but {async_queue.size()} messages still in queue. Continuing...")
         except Exception as e:
             logger.error(f"Error in processing message: {e}")
             logger.error(f"Failed to process message: {message}")
-        await asyncio.sleep(1)
+        await asyncio.sleep(0)
 

@@ -158,16 +158,13 @@ def create_app() -> FastAPI:
 async def trigger_re_indexer():
     logger.info("Reindexing triggered")
     try:
-        await asyncio.gather(
-            crawl_loop(async_queue),
-            index_loop(async_queue, indexer)
-        )
+        await crawl_loop(async_queue)
         logger.info("reindexing finished")
     except Exception as e:
         logger.error(f"error in scheduled reindexing {e}")
 
 
-@repeat_every(seconds=60*20)
+@repeat_every(seconds=60*20, wait_first=True)
 async def schedule_reindexing():
     await trigger_re_indexer()
 
