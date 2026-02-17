@@ -37,4 +37,4 @@ ENV PORT=8000
 ENV CURRENT_HOST=0.0.0.0
 ENV WORKERS=1
 
-CMD ["sh", "-c", "uvicorn app:app --loop asyncio --reload --workers ${WORKERS} --host $CURRENT_HOST --port $PORT --proxy-headers"]
+CMD ["sh", "-c", "uvicorn app:app --loop asyncio --workers ${WORKERS} --host $CURRENT_HOST --port $PORT --proxy-headers"]
