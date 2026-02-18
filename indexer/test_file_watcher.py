@@ -13,6 +13,15 @@ from singleton import Singleton
 # Use a fast poll interval for tests
 os.environ["FILE_WATCHER_POLL_INTERVAL"] = "1"
 from file_watcher import FileWatcher, FileWatcherHandler, Debouncer, AVAILABLE_EXTENSIONS
+from progress import IndexingProgress
+
+
+@pytest.fixture(autouse=True)
+def clear_singletons():
+    """Clear Singleton instances between tests to avoid stale state."""
+    Singleton._instances.clear()
+    yield
+    Singleton._instances.clear()
 
 
 @pytest.fixture
@@ -212,5 +221,74 @@ async def test_delete_enqueues_purge(async_queue, tmp_watch_dir):
         assert purge_messages[0]["source"] == "file_watcher"
         # The deleted file should be excluded from existing_file_paths
         assert test_file not in purge_messages[0]["existing_file_paths"]
+    finally:
+        watcher.stop()
+
+
+# ── Progress / debounce tests ──
+
+
+@pytest.mark.asyncio
+async def test_debouncer_pending_count():
+    """Debouncer.pending_count reflects in-flight tasks."""
+    debouncer = Debouncer(delay=1.0)
+    assert debouncer.pending_count == 0
+
+    called = asyncio.Event()
+
+    async def callback():
+        called.set()
+
+    await debouncer.debounce("file.txt", callback)
+    assert debouncer.pending_count == 1
+
+    # Wait for debounce delay + callback to finish
+    await asyncio.sleep(1.5)
+    assert called.is_set()
+    assert debouncer.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_discovered_incremented_on_file_create(async_queue, tmp_watch_dir):
+    """FileWatcher with progress should increment files_discovered on file creation."""
+    prog = IndexingProgress()
+    watcher = FileWatcher(async_queue, tmp_watch_dir, progress=prog)
+    watcher.start()
+    try:
+        await asyncio.sleep(0.5)
+        with open(os.path.join(tmp_watch_dir, "doc.txt"), "w") as f:
+            f.write("hello")
+
+        # Wait for poll + debounce
+        await _wait_for_queue(async_queue, min_count=1, timeout=8)
+        assert prog.snapshot()["files_discovered"] == 1
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_discovered_not_incremented_on_modify(async_queue, tmp_watch_dir):
+    """Modifying an existing file should NOT increment files_discovered."""
+    prog = IndexingProgress()
+
+    # Create file before watcher starts (simulates pre-existing file)
+    test_file = os.path.join(tmp_watch_dir, "existing.txt")
+    with open(test_file, "w") as f:
+        f.write("original")
+
+    watcher = FileWatcher(async_queue, tmp_watch_dir, progress=prog)
+    watcher.start()
+    try:
+        await asyncio.sleep(0.5)
+
+        # Modify the existing file
+        with open(test_file, "w") as f:
+            f.write("modified")
+
+        # Wait for poll + debounce
+        await _wait_for_queue(async_queue, min_count=1, timeout=8)
+
+        # Modify should not bump discovered count
+        assert prog.snapshot()["files_discovered"] == 0
     finally:
         watcher.stop()

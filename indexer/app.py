@@ -63,6 +63,7 @@ async def status():
     snap = progress.snapshot()
     snap["queue_depth"] = async_queue.size()
     snap["file_watcher_alive"] = file_watcher.is_alive() if file_watcher else False
+    snap["debounce_pending"] = file_watcher.debounce_pending if file_watcher else 0
     return snap
 
 
@@ -134,7 +135,7 @@ async def lifespan(app: FastAPI):
     # Start file watcher for incremental updates
     if ENABLE_FILE_WATCHER:
         try:
-            file_watcher = FileWatcher(async_queue, FILES_PATH)
+            file_watcher = FileWatcher(async_queue, FILES_PATH, progress=progress)
             file_watcher.start()
             logger.info(f"File watcher started monitoring: {FILES_PATH}")
         except Exception as e:

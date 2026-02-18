@@ -9,6 +9,7 @@ from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from async_queue import AsyncQueue
 from singleton import Singleton
 from storage import MinimaStore
+from progress import IndexingProgress
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,11 @@ class Debouncer:
             if completed:
                 logger.debug(f"Cleaned up {len(completed)} completed debounce tasks")
 
+    @property
+    def pending_count(self) -> int:
+        """Number of tasks still waiting (debouncing or running)."""
+        return sum(1 for t in self.pending_tasks.values() if not t.done())
+
     def cancel_all(self):
         """Cancel all pending tasks"""
         for task in self.pending_tasks.values():
@@ -67,11 +73,13 @@ class Debouncer:
 class FileWatcherHandler(FileSystemEventHandler):
     """Handles file system events and enqueues them for indexing"""
 
-    def __init__(self, async_queue: AsyncQueue, debouncer: Debouncer, loop: asyncio.AbstractEventLoop):
+    def __init__(self, async_queue: AsyncQueue, debouncer: Debouncer, loop: asyncio.AbstractEventLoop,
+                 progress: Optional[IndexingProgress] = None):
         super().__init__()
         self.async_queue = async_queue
         self.debouncer = debouncer
         self.loop = loop
+        self.progress = progress
 
     def _should_process(self, path: str, is_directory: bool) -> bool:
         """Check if a file should be processed based on extension and patterns"""
@@ -145,6 +153,8 @@ class FileWatcherHandler(FileSystemEventHandler):
             return
 
         logger.info(f"File created: {event.src_path}")
+        if self.progress:
+            self.progress.record_discovered()
 
         # Use thread-safe call to enqueue with debounce
         path = event.src_path
@@ -191,6 +201,8 @@ class FileWatcherHandler(FileSystemEventHandler):
 
         # Treat as create of new path (with debounce)
         if self._should_process(event.dest_path, False):
+            if self.progress:
+                self.progress.record_discovered()
             dest_path = event.dest_path
 
             def schedule_debounce():
@@ -206,9 +218,11 @@ class FileWatcherHandler(FileSystemEventHandler):
 class FileWatcher(metaclass=Singleton):
     """Main file watcher orchestrator"""
 
-    def __init__(self, async_queue: AsyncQueue, watch_path: str):
+    def __init__(self, async_queue: AsyncQueue, watch_path: str,
+                 progress: Optional[IndexingProgress] = None):
         self.async_queue = async_queue
         self.watch_path = watch_path
+        self.progress = progress
         self.observer: Optional[PollingObserver] = None
         self.handler: Optional[FileWatcherHandler] = None
         self.debouncer = Debouncer(DEBOUNCE_SECONDS)
@@ -225,7 +239,7 @@ class FileWatcher(metaclass=Singleton):
             self.loop = asyncio.get_event_loop()
 
             # Create handler and observer
-            self.handler = FileWatcherHandler(self.async_queue, self.debouncer, self.loop)
+            self.handler = FileWatcherHandler(self.async_queue, self.debouncer, self.loop, self.progress)
             self.observer = PollingObserver(timeout=POLLING_INTERVAL)
             self.observer.schedule(self.handler, self.watch_path, recursive=True)
 
@@ -248,6 +262,11 @@ class FileWatcher(metaclass=Singleton):
             self.observer.join(timeout=5)
             self.debouncer.cancel_all()
             logger.info("File watcher stopped")
+
+    @property
+    def debounce_pending(self) -> int:
+        """Number of files currently waiting in the debouncer."""
+        return self.debouncer.pending_count
 
     def is_alive(self) -> bool:
         """Check if the observer is running"""

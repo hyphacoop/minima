@@ -12,7 +12,7 @@ executor = ThreadPoolExecutor()
 
 # Path to crawl/watch: CONTAINER_PATH in Docker, LOCAL_FILES_PATH when running locally
 FILES_PATH = os.environ.get("CONTAINER_PATH") or os.environ.get("LOCAL_FILES_PATH")
-AVAILABLE_EXTENSIONS = [".pdf", ".xls", "xlsx", ".doc", ".docx", ".txt", ".md", ".csv", ".ppt", ".pptx"]
+AVAILABLE_EXTENSIONS = [".pdf", ".xls", ".xlsx", ".doc", ".docx", ".txt", ".md", ".csv", ".ppt", ".pptx"]
 
 
 async def crawl_loop(async_queue, progress: IndexingProgress = None):
