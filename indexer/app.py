@@ -8,7 +8,6 @@ from storage import MinimaStore
 from async_queue import AsyncQueue
 from fastapi import FastAPI, APIRouter
 from contextlib import asynccontextmanager
-from fastapi_utilities import repeat_every
 from async_loop import index_loop, crawl_loop
 from file_watcher import FileWatcher
 
@@ -68,6 +67,15 @@ async def embedding(request: Query):
         return {"error": str(e)}    
 
 
+def _on_index_loop_done(task: asyncio.Task):
+    if task.cancelled():
+        logger.info("index_loop task was cancelled")
+    elif task.exception():
+        logger.error(f"index_loop task died with exception: {task.exception()}", exc_info=task.exception())
+    else:
+        logger.warning("index_loop task exited unexpectedly (no exception)")
+
+
 async def watchdog_health_check(file_watcher: FileWatcher):
     """Monitor file watcher health and restart if needed"""
     retry_count = 0
@@ -120,15 +128,12 @@ async def lifespan(app: FastAPI):
         logger.info("File watcher disabled via environment variable")
 
     # Start existing loops + health check
-    tasks = [
-        asyncio.create_task(index_loop(async_queue, indexer))
-    ]
+    index_task = asyncio.create_task(index_loop(async_queue, indexer))
+    index_task.add_done_callback(_on_index_loop_done)
+    tasks = [index_task]
 
     if file_watcher is not None:
         tasks.append(asyncio.create_task(watchdog_health_check(file_watcher)))
-
-    # Start scheduled backup polling
-    await schedule_reindexing()
 
     try:
         yield
@@ -154,18 +159,5 @@ def create_app() -> FastAPI:
     )
     app.include_router(router)
     return app
-
-async def trigger_re_indexer():
-    logger.info("Reindexing triggered")
-    try:
-        await crawl_loop(async_queue)
-        logger.info("reindexing finished")
-    except Exception as e:
-        logger.error(f"error in scheduled reindexing {e}")
-
-
-@repeat_every(seconds=60*20, wait_first=True)
-async def schedule_reindexing():
-    await trigger_re_indexer()
 
 app = create_app()

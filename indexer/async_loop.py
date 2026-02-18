@@ -46,19 +46,22 @@ async def index_loop(async_queue, indexer: Indexer):
     loop = asyncio.get_running_loop()
     logger.info("Starting index loop")
     while True:
-        message = await async_queue.dequeue()
-        source = message.get("source", "unknown")
-        if message["type"] == "file":
-            logger.info(f"Processing message from {source}: {message.get('path', 'unknown')}")
-        else:
-            logger.info(f"Processing message from {source}: {message}")
         try:
+            logger.debug("Waiting for next message...")
+            message = await async_queue.dequeue()
+            source = message.get("source", "unknown")
+            if message["type"] == "file":
+                logger.info(f"Processing message from {source}: {message.get('path', 'unknown')}")
+            else:
+                logger.info(f"Processing message from {source}: {message}")
             if message["type"] == "file":
                 await loop.run_in_executor(executor, indexer.index, message)
             elif message["type"] == "all_files":
                 await loop.run_in_executor(executor, indexer.purge, message)
+        except asyncio.CancelledError:
+            logger.info("index_loop cancelled, shutting down")
+            raise
         except Exception as e:
-            logger.error(f"Error in processing message: {e}")
-            logger.error(f"Failed to process message: {message}")
+            logger.error(f"Error in index_loop iteration: {e}", exc_info=True)
         await asyncio.sleep(0)
 

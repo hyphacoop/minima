@@ -4,7 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, Optional
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from async_queue import AsyncQueue
 from singleton import Singleton
@@ -12,6 +12,7 @@ from storage import MinimaStore
 
 logger = logging.getLogger(__name__)
 
+POLLING_INTERVAL = int(os.environ.get("FILE_WATCHER_POLL_INTERVAL", "5"))
 AVAILABLE_EXTENSIONS = [".pdf", ".xls", ".xlsx", ".doc", ".docx", ".txt", ".md", ".csv", ".ppt", ".pptx"]
 DEBOUNCE_SECONDS = 2.0
 TEMPORARY_PATTERNS = [".tmp", ".swp", "~"]
@@ -143,7 +144,7 @@ class FileWatcherHandler(FileSystemEventHandler):
         if not self._should_process(event.src_path, event.is_directory):
             return
 
-        logger.debug(f"File created: {event.src_path}")
+        logger.info(f"File created: {event.src_path}")
 
         # Use thread-safe call to enqueue with debounce
         path = event.src_path
@@ -158,7 +159,7 @@ class FileWatcherHandler(FileSystemEventHandler):
         if not self._should_process(event.src_path, event.is_directory):
             return
 
-        logger.debug(f"File modified: {event.src_path}")
+        logger.info(f"File modified: {event.src_path}")
 
         # Use thread-safe call to enqueue with debounce
         path = event.src_path
@@ -208,7 +209,7 @@ class FileWatcher(metaclass=Singleton):
     def __init__(self, async_queue: AsyncQueue, watch_path: str):
         self.async_queue = async_queue
         self.watch_path = watch_path
-        self.observer: Optional[Observer] = None
+        self.observer: Optional[PollingObserver] = None
         self.handler: Optional[FileWatcherHandler] = None
         self.debouncer = Debouncer(DEBOUNCE_SECONDS)
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -225,7 +226,7 @@ class FileWatcher(metaclass=Singleton):
 
             # Create handler and observer
             self.handler = FileWatcherHandler(self.async_queue, self.debouncer, self.loop)
-            self.observer = Observer()
+            self.observer = PollingObserver(timeout=POLLING_INTERVAL)
             self.observer.schedule(self.handler, self.watch_path, recursive=True)
 
             # Start observer
