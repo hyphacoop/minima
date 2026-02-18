@@ -143,7 +143,7 @@ class Indexer:
             logger.error(f"Error processing file {loader.file_path}: {str(e)}")
             return []
 
-    def index(self, message: Dict[str, any]) -> None:
+    def index(self, message: Dict[str, any]) -> IndexingStatus:
         start = time.time()
         path, file_id, last_updated_seconds = message["path"], message["file_id"], message["last_updated_seconds"]
         logger.info(f"Processing file: {path} (ID: {file_id})")
@@ -160,10 +160,12 @@ class Indexer:
                     logger.info(f"Successfully indexed {path} with IDs: {ids}")
             except Exception as e:
                 logger.error(f"Failed to index file {path}: {str(e)}")
+                indexing_status = IndexingStatus.failed
         else:
             logger.info(f"Skipping {path}, no indexing required. timestamp didn't change")
         end = time.time()
         logger.info(f"Processing took {end - start} seconds for file {path}")
+        return indexing_status
 
     def purge(self, message: Dict[str, any]) -> None:
         existing_file_paths: list[str] = message["existing_file_paths"]

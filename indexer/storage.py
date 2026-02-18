@@ -11,6 +11,7 @@ class IndexingStatus(Enum):
     new_file = 1
     need_reindexing = 2
     no_need_reindexing = 3
+    failed = 4
 
 
 class MinimaDoc(SQLModel, table=True):

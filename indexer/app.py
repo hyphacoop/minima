@@ -10,6 +10,7 @@ from fastapi import FastAPI, APIRouter
 from contextlib import asynccontextmanager
 from async_loop import index_loop, crawl_loop
 from file_watcher import FileWatcher
+from progress import IndexingProgress
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,6 +22,8 @@ ENABLE_FILE_WATCHER = os.environ.get("ENABLE_FILE_WATCHER", "true").lower() == "
 indexer = Indexer()
 router = APIRouter()
 async_queue = AsyncQueue()
+progress = IndexingProgress()
+file_watcher: FileWatcher | None = None
 MinimaStore.create_db_and_tables()
 
 def init_loader_dependencies():
@@ -52,8 +55,19 @@ async def query(request: Query):
         return {"error": str(e)}
 
 
+@router.get(
+    "/status",
+    response_description='Get indexing progress status',
+)
+async def status():
+    snap = progress.snapshot()
+    snap["queue_depth"] = async_queue.size()
+    snap["file_watcher_alive"] = file_watcher.is_alive() if file_watcher else False
+    return snap
+
+
 @router.post(
-    "/embedding", 
+    "/embedding",
     response_description='Get embedding for a query',
 )
 async def embedding(request: Query):
@@ -108,15 +122,16 @@ async def watchdog_health_check(file_watcher: FileWatcher):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global file_watcher
+
     if not FILES_PATH:
         raise ValueError("Set CONTAINER_PATH or LOCAL_FILES_PATH in environment")
 
     # Run initial crawl first
-    await crawl_loop(async_queue)
+    await crawl_loop(async_queue, progress)
     logger.info("Initial crawl complete")
 
     # Start file watcher for incremental updates
-    file_watcher = None
     if ENABLE_FILE_WATCHER:
         try:
             file_watcher = FileWatcher(async_queue, FILES_PATH)
@@ -128,7 +143,7 @@ async def lifespan(app: FastAPI):
         logger.info("File watcher disabled via environment variable")
 
     # Start existing loops + health check
-    index_task = asyncio.create_task(index_loop(async_queue, indexer))
+    index_task = asyncio.create_task(index_loop(async_queue, indexer, progress))
     index_task.add_done_callback(_on_index_loop_done)
     tasks = [index_task]
 

@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import MagicMock
 from async_queue import AsyncQueue
 from async_loop import index_loop
+from progress import IndexingProgress
 
 
 @pytest.fixture
@@ -22,8 +23,13 @@ def mock_indexer():
     return indexer
 
 
+@pytest.fixture
+def progress():
+    return IndexingProgress()
+
+
 @pytest.mark.asyncio
-async def test_index_loop_routes_file_to_index(async_queue, mock_indexer):
+async def test_index_loop_routes_file_to_index(async_queue, mock_indexer, progress):
     """A 'file' message should be routed to indexer.index()."""
     message = {
         "path": "/tmp/test.txt",
@@ -34,7 +40,7 @@ async def test_index_loop_routes_file_to_index(async_queue, mock_indexer):
     }
     async_queue.enqueue(message)
 
-    loop_task = asyncio.create_task(index_loop(async_queue, mock_indexer))
+    loop_task = asyncio.create_task(index_loop(async_queue, mock_indexer, progress))
     # Give the loop time to process the message
     for _ in range(50):
         await asyncio.sleep(0.05)
@@ -54,7 +60,7 @@ async def test_index_loop_routes_file_to_index(async_queue, mock_indexer):
 
 
 @pytest.mark.asyncio
-async def test_index_loop_routes_all_files_to_purge(async_queue, mock_indexer):
+async def test_index_loop_routes_all_files_to_purge(async_queue, mock_indexer, progress):
     """An 'all_files' message should be routed to indexer.purge()."""
     message = {
         "existing_file_paths": ["/tmp/a.txt", "/tmp/b.txt"],
@@ -63,7 +69,7 @@ async def test_index_loop_routes_all_files_to_purge(async_queue, mock_indexer):
     }
     async_queue.enqueue(message)
 
-    loop_task = asyncio.create_task(index_loop(async_queue, mock_indexer))
+    loop_task = asyncio.create_task(index_loop(async_queue, mock_indexer, progress))
     for _ in range(50):
         await asyncio.sleep(0.05)
         if mock_indexer.purge.called:
@@ -82,7 +88,7 @@ async def test_index_loop_routes_all_files_to_purge(async_queue, mock_indexer):
 
 
 @pytest.mark.asyncio
-async def test_index_loop_survives_index_error(async_queue, mock_indexer):
+async def test_index_loop_survives_index_error(async_queue, mock_indexer, progress):
     """If indexer.index raises, the loop should continue processing the next message."""
     # First call raises, second call succeeds
     mock_indexer.index.side_effect = [ValueError("bad file"), None]
@@ -104,7 +110,7 @@ async def test_index_loop_survives_index_error(async_queue, mock_indexer):
     async_queue.enqueue(bad_message)
     async_queue.enqueue(good_message)
 
-    loop_task = asyncio.create_task(index_loop(async_queue, mock_indexer))
+    loop_task = asyncio.create_task(index_loop(async_queue, mock_indexer, progress))
     for _ in range(100):
         await asyncio.sleep(0.05)
         if mock_indexer.index.call_count >= 2:
@@ -123,9 +129,9 @@ async def test_index_loop_survives_index_error(async_queue, mock_indexer):
 
 
 @pytest.mark.asyncio
-async def test_index_loop_cancellation(async_queue, mock_indexer):
+async def test_index_loop_cancellation(async_queue, mock_indexer, progress):
     """Cancelling the index_loop task should raise CancelledError cleanly."""
-    loop_task = asyncio.create_task(index_loop(async_queue, mock_indexer))
+    loop_task = asyncio.create_task(index_loop(async_queue, mock_indexer, progress))
     await asyncio.sleep(0.1)  # let the loop start waiting
 
     loop_task.cancel()
