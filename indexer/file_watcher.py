@@ -31,17 +31,14 @@ class Debouncer:
         Debounce a callback for a specific file path.
         Cancels any pending task for the same path and schedules a new one.
         """
-        # Cancel existing task for this path
         if path in self.pending_tasks:
             self.pending_tasks[path].cancel()
 
-        # Schedule new task
         async def delayed_callback():
             await asyncio.sleep(self.delay)
             try:
                 await callback(*args)
             finally:
-                # Clean up completed task
                 if path in self.pending_tasks:
                     del self.pending_tasks[path]
 
@@ -80,18 +77,15 @@ class FileWatcherHandler(FileSystemEventHandler):
 
         filename = Path(path).name
 
-        # Skip hidden files
         if filename.startswith('.'):
             logger.debug(f"Skipping hidden file: {filename}")
             return False
 
-        # Skip temporary files
         for pattern in TEMPORARY_PATTERNS:
             if filename.endswith(pattern):
                 logger.debug(f"Skipping temporary file: {filename}")
                 return False
 
-        # Check supported extensions
         if not any(path.endswith(ext) for ext in AVAILABLE_EXTENSIONS):
             logger.debug(f"Skipping unsupported file type: {filename}")
             return False
@@ -104,7 +98,6 @@ class FileWatcherHandler(FileSystemEventHandler):
             logger.warning(f"File no longer exists, skipping: {path}")
             return
 
-        # Check queue size for backpressure
         if self.async_queue.size() > 1000:
             logger.warning(f"Queue size exceeded 1000, skipping non-critical file: {path}")
             return
@@ -122,19 +115,21 @@ class FileWatcherHandler(FileSystemEventHandler):
         except Exception as e:
             logger.error(f"Error enqueueing file {path}: {e}")
 
-    def _enqueue_delete(self, path: str):
-        """Enqueue a delete event (purge)"""
+    def _enqueue_delete(self, path: str, is_directory: bool = False):
+        """Enqueue a purge event. For directories, removes all indexed files under that path."""
         try:
-            # Get all currently indexed paths except the deleted one
             existing_paths = MinimaStore.select_all_indexed_paths()
-            existing_paths = [p for p in existing_paths if p != path]
+            if is_directory:
+                prefix = path.rstrip("/") + "/"
+                existing_paths = [p for p in existing_paths if not p.startswith(prefix)]
+            else:
+                existing_paths = [p for p in existing_paths if p != path]
 
-            message = {
+            self.async_queue.enqueue({
                 "existing_file_paths": existing_paths,
                 "type": "all_files",
                 "source": "file_watcher"
-            }
-            self.async_queue.enqueue(message)
+            })
             logger.info(f"Delete event enqueued for: {path}")
         except Exception as e:
             logger.error(f"Error enqueueing delete for {path}: {e}")
@@ -145,8 +140,6 @@ class FileWatcherHandler(FileSystemEventHandler):
             return
 
         logger.info(f"File created: {event.src_path}")
-
-        # Use thread-safe call to enqueue with debounce
         path = event.src_path
 
         def schedule_debounce():
@@ -160,8 +153,6 @@ class FileWatcherHandler(FileSystemEventHandler):
             return
 
         logger.info(f"File modified: {event.src_path}")
-
-        # Use thread-safe call to enqueue with debounce
         path = event.src_path
 
         def schedule_debounce():
@@ -170,26 +161,31 @@ class FileWatcherHandler(FileSystemEventHandler):
         self.loop.call_soon_threadsafe(schedule_debounce)
 
     def on_deleted(self, event: FileSystemEvent):
-        """Handle file deletion events (no debounce)"""
+        """Handle file and directory deletion events"""
         if event.is_directory:
+            logger.info(f"Directory deleted: {event.src_path}")
+            self.loop.call_soon_threadsafe(self._enqueue_delete, event.src_path, True)
             return
 
         logger.debug(f"File deleted: {event.src_path}")
-
-        # Delete events are not debounced - immediate processing
         self.loop.call_soon_threadsafe(self._enqueue_delete, event.src_path)
 
     def on_moved(self, event: FileSystemEvent):
-        """Handle file move/rename events as delete + create"""
+        """Handle file and directory move/rename events"""
         if event.is_directory:
+            logger.info(f"Directory moved: {event.src_path} -> {event.dest_path}")
+            self.loop.call_soon_threadsafe(self._enqueue_delete, event.src_path, True)
+            dest_path = event.dest_path
+
+            def schedule_dir_reindex():
+                asyncio.create_task(self._async_enqueue_dir(dest_path))
+
+            self.loop.call_soon_threadsafe(schedule_dir_reindex)
             return
 
         logger.debug(f"File moved: {event.src_path} -> {event.dest_path}")
-
-        # Treat as delete of old path
         self.loop.call_soon_threadsafe(self._enqueue_delete, event.src_path)
 
-        # Treat as create of new path (with debounce)
         if self._should_process(event.dest_path, False):
             dest_path = event.dest_path
 
@@ -199,8 +195,16 @@ class FileWatcherHandler(FileSystemEventHandler):
             self.loop.call_soon_threadsafe(schedule_debounce)
 
     async def _async_enqueue_file(self, path: str):
-        """Async wrapper for enqueueing files"""
+        """Async wrapper for enqueueing a single file"""
         self._enqueue_file(path)
+
+    async def _async_enqueue_dir(self, dir_path: str):
+        """Walk a directory and enqueue all supported files for indexing"""
+        for root, _dirs, files in os.walk(dir_path):
+            for filename in files:
+                full_path = os.path.join(root, filename)
+                if self._should_process(full_path, is_directory=False):
+                    self._enqueue_file(full_path)
 
 
 class FileWatcher(metaclass=Singleton):
@@ -221,21 +225,13 @@ class FileWatcher(metaclass=Singleton):
             return
 
         try:
-            # Get the current event loop
             self.loop = asyncio.get_event_loop()
-
-            # Create handler and observer
             self.handler = FileWatcherHandler(self.async_queue, self.debouncer, self.loop)
             self.observer = PollingObserver(timeout=POLLING_INTERVAL)
             self.observer.schedule(self.handler, self.watch_path, recursive=True)
-
-            # Start observer
             self.observer.start()
             logger.info(f"File watcher started monitoring: {self.watch_path} (recursive)")
-
-            # Start cleanup loop
             asyncio.create_task(self.debouncer.start_cleanup_loop())
-
         except Exception as e:
             logger.error(f"Failed to start file watcher: {e}")
             raise
