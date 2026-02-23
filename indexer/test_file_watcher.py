@@ -214,3 +214,77 @@ async def test_delete_enqueues_purge(async_queue, tmp_watch_dir):
         assert test_file not in purge_messages[0]["existing_file_paths"]
     finally:
         watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_directory_delete_purges_all_files_under_it(async_queue, tmp_watch_dir):
+    """Deleting a directory should purge all indexed files under that path."""
+    watcher = FileWatcher(async_queue, tmp_watch_dir)
+    watcher.start()
+    try:
+        await asyncio.sleep(0.5)
+        subdir = os.path.join(tmp_watch_dir, "docs")
+        os.makedirs(subdir)
+        file_in_dir = os.path.join(subdir, "report.pdf")
+        other_file = os.path.join(tmp_watch_dir, "other.txt")
+        with open(file_in_dir, "w") as f:
+            f.write("content")
+        with open(other_file, "w") as f:
+            f.write("content")
+
+        await _wait_for_queue(async_queue, min_count=2, timeout=8)
+
+        with patch("file_watcher.MinimaStore") as mock_store:
+            mock_store.select_all_indexed_paths.return_value = [file_in_dir, other_file]
+            import shutil
+            shutil.rmtree(subdir)
+            await asyncio.sleep(3)
+
+        messages = []
+        while async_queue.size() > 0:
+            messages.append(await async_queue.dequeue())
+
+        purge_messages = [m for m in messages if m["type"] == "all_files"]
+        assert len(purge_messages) >= 1
+        remaining = purge_messages[0]["existing_file_paths"]
+        assert file_in_dir not in remaining
+        assert other_file in remaining
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_directory_rename_purges_old_and_reindexes_new(async_queue, tmp_watch_dir):
+    """Renaming a directory should purge old paths and enqueue files under new path."""
+    watcher = FileWatcher(async_queue, tmp_watch_dir)
+    watcher.start()
+    try:
+        await asyncio.sleep(0.5)
+        old_dir = os.path.join(tmp_watch_dir, "old")
+        new_dir = os.path.join(tmp_watch_dir, "new")
+        os.makedirs(old_dir)
+        old_file = os.path.join(old_dir, "doc.txt")
+        with open(old_file, "w") as f:
+            f.write("content")
+
+        await _wait_for_queue(async_queue, min_count=1, timeout=8)
+
+        with patch("file_watcher.MinimaStore") as mock_store:
+            mock_store.select_all_indexed_paths.return_value = [old_file]
+            os.rename(old_dir, new_dir)
+            await asyncio.sleep(3)
+
+        messages = []
+        while async_queue.size() > 0:
+            messages.append(await async_queue.dequeue())
+
+        purge_messages = [m for m in messages if m["type"] == "all_files"]
+        assert len(purge_messages) >= 1
+        assert old_file not in purge_messages[0]["existing_file_paths"]
+
+        new_file = os.path.join(new_dir, "doc.txt")
+        reindex_messages = [m for m in messages if m["type"] == "file"]
+        reindexed_paths = [m["path"] for m in reindex_messages]
+        assert new_file in reindexed_paths
+    finally:
+        watcher.stop()
