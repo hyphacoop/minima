@@ -2,7 +2,7 @@ FROM python:3.11-slim-buster
 
 WORKDIR /usr/src/app
 
-ARG RERANKER_MODEL
+ARG RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 
 RUN pip install --upgrade pip
 COPY requirements.txt .

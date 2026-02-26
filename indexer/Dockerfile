@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
 
 # Pre-download the embedding model into the image
-ARG EMBEDDING_MODEL_ID
+ARG EMBEDDING_MODEL_ID=BAAI/bge-small-en-v1.5
 RUN pip install --no-cache-dir huggingface_hub && \
     python -c "from huggingface_hub import snapshot_download; snapshot_download('$EMBEDDING_MODEL_ID')"
 
