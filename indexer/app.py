@@ -1,12 +1,15 @@
 import os
+import json
+import uuid
 import nltk
 import logging
 import asyncio
+from pathlib import Path
 from indexer import Indexer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from storage import MinimaStore
 from async_queue import AsyncQueue
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException, Query as FastAPIQuery
 from contextlib import asynccontextmanager
 from async_loop import index_loop, crawl_loop
 from file_watcher import FileWatcher
@@ -40,6 +43,87 @@ class Query(BaseModel):
     query: str
 
 
+class MetadataUpdate(BaseModel):
+    path: str | None = None
+    filename: str | None = None
+    description: str = Field(default="", max_length=1000)
+    tags: list[str] = Field(default_factory=list, max_items=50)
+
+
+def _supported_file(path: str) -> bool:
+    return Path(path).suffix.lower() in indexer.config.EXTENSIONS_TO_LOADERS
+
+
+def _find_file_by_filename(filename: str) -> str:
+    if not FILES_PATH:
+        raise HTTPException(status_code=500, detail="Set CONTAINER_PATH or LOCAL_FILES_PATH in environment")
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="filename must be a basename, not a path")
+
+    # First check database for files with this filename
+    db_matches = MinimaStore.find_by_filename(filename)
+    matches = [m for m in db_matches if _supported_file(m)]
+
+    # If not found in DB, search filesystem
+    if not matches:
+        for root, _, filenames in os.walk(FILES_PATH):
+            if filename in filenames:
+                candidate = os.path.join(root, filename)
+                if _supported_file(candidate):
+                    matches.append(candidate)
+
+    if not matches:
+        raise HTTPException(status_code=404, detail="File not found")
+    if len(matches) > 1:
+        relative_paths = [os.path.relpath(match, FILES_PATH) for match in matches]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Filename is ambiguous. Found multiple matches: {', '.join(relative_paths)}"
+        )
+    return os.path.realpath(matches[0])
+
+
+def _resolve_file_path(request_path: str | None = None, filename: str | None = None) -> str:
+    if not FILES_PATH:
+        raise HTTPException(status_code=500, detail="Set CONTAINER_PATH or LOCAL_FILES_PATH in environment")
+    if filename:
+        return _find_file_by_filename(filename)
+    if not request_path:
+        raise HTTPException(status_code=400, detail="path or filename is required")
+
+    base = os.path.realpath(FILES_PATH)
+
+    # Try the path as absolute first, then as relative to base
+    candidate = os.path.realpath(request_path)
+    if not (candidate.startswith(base + os.sep) or candidate == base):
+        candidate = os.path.realpath(os.path.join(base, request_path.lstrip("/")))
+
+    # Verify path is within file root and is a file
+    if not (candidate.startswith(base + os.sep) or candidate == base):
+        raise HTTPException(status_code=400, detail="Path cannot escape configured file root")
+    if not os.path.isfile(candidate):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _supported_file(candidate):
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+    return candidate
+
+
+def _serialize_doc(doc, fpath: str | None = None) -> dict:
+    tags = []
+    if doc and doc.tags:
+        try:
+            tags = json.loads(doc.tags)
+        except json.JSONDecodeError:
+            tags = []
+    return {
+        "path": fpath or doc.fpath,
+        "description": doc.description if doc else "",
+        "tags": tags,
+        "last_updated_seconds": doc.last_updated_seconds if doc else None,
+        "metadata_updated_seconds": doc.metadata_updated_seconds if doc else None,
+    }
+
+
 @router.post(
     "/query", 
     response_description='Query local data storage',
@@ -53,6 +137,78 @@ async def query(request: Query):
     except Exception as e:
         logger.error(f"Error in processing query: {e}")
         return {"error": str(e)}
+
+
+@router.get(
+    "/metadata",
+    response_description="Get metadata for a file",
+)
+async def get_metadata(path: str = FastAPIQuery(...)):
+    fpath = _resolve_file_path(request_path=path)
+    try:
+        doc = MinimaStore.select_m_doc(fpath)
+    except Exception:
+        doc = None
+    return _serialize_doc(doc, fpath=fpath)
+
+
+@router.get(
+    "/metadata/by-filename",
+    response_description="Get metadata for a file by basename",
+)
+async def get_metadata_by_filename(filename: str = FastAPIQuery(...)):
+    fpath = _resolve_file_path(filename=filename)
+    try:
+        doc = MinimaStore.select_m_doc(fpath)
+    except Exception:
+        doc = None
+    return _serialize_doc(doc, fpath=fpath)
+
+
+@router.put(
+    "/metadata",
+    response_description="Update metadata for a file",
+)
+async def put_metadata(request: MetadataUpdate):
+    fpath = _resolve_file_path(request_path=request.path, filename=request.filename)
+    tags = [tag.strip() for tag in request.tags if tag.strip()]
+    doc = MinimaStore.upsert_metadata(
+        fpath=fpath,
+        description=request.description.strip(),
+        tags=json.dumps(tags),
+        last_updated_seconds=round(os.path.getmtime(fpath)),
+    )
+    async_queue.enqueue({
+        "path": fpath,
+        "file_id": str(uuid.uuid4()),
+        "last_updated_seconds": round(os.path.getmtime(fpath)),
+        "type": "file",
+        "source": "metadata_update",
+    })
+    return _serialize_doc(doc)
+
+
+@router.get(
+    "/metadata/list",
+    response_description="List files with metadata",
+)
+async def list_metadata():
+    if not FILES_PATH:
+        raise HTTPException(status_code=500, detail="Set CONTAINER_PATH or LOCAL_FILES_PATH in environment")
+
+    docs_by_path = {doc.fpath: doc for doc in MinimaStore.list_docs()}
+    files = []
+    for root, _, filenames in os.walk(FILES_PATH):
+        for filename in filenames:
+            fpath = os.path.join(root, filename)
+            if not _supported_file(fpath):
+                continue
+            item = _serialize_doc(docs_by_path.get(fpath), fpath=fpath)
+            item["name"] = filename
+            item["relative_path"] = os.path.relpath(fpath, FILES_PATH)
+            files.append(item)
+    files.sort(key=lambda item: item["relative_path"])
+    return {"files": files}
 
 
 @router.get(

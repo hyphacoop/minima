@@ -1,4 +1,7 @@
 import logging
+import time
+from pathlib import Path
+from sqlalchemy import text
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from singleton import Singleton
@@ -17,11 +20,17 @@ class IndexingStatus(Enum):
 class MinimaDoc(SQLModel, table=True):
     fpath: str = Field(primary_key=True)
     last_updated_seconds: int | None = Field(default=None, index=True)
+    description: str = Field(default="")
+    tags: str = Field(default="[]")
+    metadata_updated_seconds: int | None = Field(default=None, index=True)
 
 
 class MinimaDocUpdate(SQLModel):
     fpath: str | None = None
     last_updated_seconds: int | None = None
+    description: str | None = None
+    tags: str | None = None
+    metadata_updated_seconds: int | None = None
 
 
 sqlite_file_name = "/indexer/storage/database.db"
@@ -36,6 +45,23 @@ class MinimaStore(metaclass=Singleton):
     @staticmethod
     def create_db_and_tables():
         SQLModel.metadata.create_all(engine)
+        MinimaStore._migrate_minima_doc_columns()
+
+    @staticmethod
+    def _migrate_minima_doc_columns():
+        """Add metadata columns when upgrading an existing SQLite database."""
+        with Session(engine) as session:
+            rows = session.exec(text("PRAGMA table_info(minimadoc)")).all()
+            existing_columns = {row[1] for row in rows}
+            migrations = {
+                "description": "ALTER TABLE minimadoc ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+                "tags": "ALTER TABLE minimadoc ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+                "metadata_updated_seconds": "ALTER TABLE minimadoc ADD COLUMN metadata_updated_seconds INTEGER",
+            }
+            for column, statement in migrations.items():
+                if column not in existing_columns:
+                    session.exec(text(statement))
+            session.commit()
 
     @staticmethod
     def delete_m_doc(fpath: str) -> None:
@@ -65,6 +91,52 @@ class MinimaStore(metaclass=Singleton):
             return [fpath for fpath in results]
 
     @staticmethod
+    def list_docs() -> list[MinimaDoc]:
+        with Session(engine) as session:
+            statement = select(MinimaDoc).order_by(MinimaDoc.fpath)
+            return list(session.exec(statement))
+
+    @staticmethod
+    def find_by_filename(filename: str) -> list[str]:
+        """Find all file paths in the database with the given basename."""
+        with Session(engine) as session:
+            docs = session.exec(select(MinimaDoc)).all()
+            return [doc.fpath for doc in docs if Path(doc.fpath).name == filename]
+
+    @staticmethod
+    def upsert_metadata(
+        fpath: str,
+        description: str,
+        tags: str,
+        last_updated_seconds: int | None = None,
+    ) -> MinimaDoc:
+        with Session(engine) as session:
+            statement = select(MinimaDoc).where(MinimaDoc.fpath == fpath)
+            doc = session.exec(statement).first()
+            metadata_updated_seconds = max(round(time.time()), (doc.last_updated_seconds or 0) + 1) if doc else round(time.time())
+            if doc is None:
+                doc = MinimaDoc(
+                    fpath=fpath,
+                    last_updated_seconds=last_updated_seconds,
+                    description=description,
+                    tags=tags,
+                    metadata_updated_seconds=metadata_updated_seconds,
+                )
+            else:
+                doc_update = MinimaDocUpdate(
+                    description=description,
+                    tags=tags,
+                    metadata_updated_seconds=metadata_updated_seconds,
+                )
+                if last_updated_seconds is not None:
+                    doc_update.last_updated_seconds = last_updated_seconds
+                doc.sqlmodel_update(doc_update.model_dump(exclude_unset=True))
+            session.add(doc)
+            session.commit()
+            session.refresh(doc)
+            return doc
+
+    @staticmethod
     def find_removed_files(existing_file_paths: set[str]):
         removed_files: list[str] = []
         with Session(engine) as session:
@@ -92,10 +164,15 @@ class MinimaStore(metaclass=Singleton):
                     logger.debug(
                         f"file {fpath} new last updated={last_updated_seconds} old last updated: {doc.last_updated_seconds}"
                     )
-                    if doc.last_updated_seconds < last_updated_seconds:
+                    indexed_seconds = doc.last_updated_seconds or 0
+                    metadata_seconds = doc.metadata_updated_seconds or 0
+                    if indexed_seconds < last_updated_seconds or indexed_seconds < metadata_seconds:
                         indexing_status = IndexingStatus.need_reindexing
-                        logger.debug(f"file {fpath} needs indexing, timestamp changed")
-                        doc_update = MinimaDocUpdate(fpath=fpath, last_updated_seconds=last_updated_seconds)
+                        logger.debug(f"file {fpath} needs indexing, timestamp or metadata changed")
+                        doc_update = MinimaDocUpdate(
+                            fpath=fpath,
+                            last_updated_seconds=max(last_updated_seconds, metadata_seconds),
+                        )
                         doc_data = doc_update.model_dump(exclude_unset=True)
                         doc.sqlmodel_update(doc_data)
                         session.add(doc)
