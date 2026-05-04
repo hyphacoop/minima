@@ -3,6 +3,7 @@ import uuid
 import torch
 import logging
 import time
+import json
 from dataclasses import dataclass
 from typing import List, Dict
 from pathlib import Path
@@ -123,6 +124,35 @@ class Indexer:
         
         return loader_class(file_path=file_path)
 
+    def _metadata_for_path(self, file_path: str) -> dict:
+        try:
+            doc = MinimaStore.select_m_doc(file_path)
+        except Exception:
+            doc = None
+
+        path = Path(file_path)
+        container_path = self.config.CONTAINER_PATH or ""
+        try:
+            relative_path = path.relative_to(container_path) if container_path else path
+        except ValueError:
+            relative_path = path
+
+        tags = []
+        if doc and doc.tags:
+            try:
+                tags = json.loads(doc.tags)
+            except json.JSONDecodeError:
+                tags = []
+
+        return {
+            "fpath": file_path,
+            "file_path": file_path,
+            "filename": path.name,
+            "parent_path_components": list(relative_path.parent.parts),
+            "description": doc.description if doc else "",
+            "tags": tags,
+        }
+
     def _process_file(self, loader) -> List[str]:
         try:
             documents = loader.load_and_split(self.text_splitter)
@@ -130,8 +160,9 @@ class Indexer:
                 logger.warning(f"No documents loaded from {loader.file_path}")
                 return []
 
+            file_metadata = self._metadata_for_path(loader.file_path)
             for doc in documents:
-                doc.metadata['file_path'] = loader.file_path
+                doc.metadata.update(file_metadata)
 
             uuids = [str(uuid.uuid4()) for _ in range(len(documents))]
             ids = self.document_store.add_documents(documents=documents, ids=uuids)
@@ -239,7 +270,12 @@ class Indexer:
                 # Store each chunk with its specific source
                 chunks.append({
                     "content": item.page_content,
-                    "source": file_url
+                    "source": file_url,
+                    "metadata": {
+                        "filename": item.metadata.get("filename") or Path(item.metadata["file_path"]).name,
+                        "description": item.metadata.get("description", ""),
+                        "tags": item.metadata.get("tags", []),
+                    }
                 })
 
             # For backward compatibility, keep the old format
